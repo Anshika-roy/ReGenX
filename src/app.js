@@ -4,6 +4,13 @@
 
 const STORAGE_KEY_PREFIX = "regenx-v3:";
 
+// PWA Service Worker Registration
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js')
+    .then(() => console.log('ReGenX PWA Service Worker Registered'))
+    .catch(err => console.log('SW Registration Failed', err));
+}
+
 // Simulated Localities for default plants (if no GPS)
 const DEFAULT_LOCALITIES = [
   { name: "Sector Beta", lat: 28.4682, lng: 77.5031 },
