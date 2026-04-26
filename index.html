@@ -32,9 +32,9 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <!-- Custom Assets -->
-  <link rel="stylesheet" href="./src/styles.css?v=3" />
-  <script src="./src/scanner.js?v=3"></script>
-  <script type="module" src="./src/app.js?v=3"></script>
+  <link rel="stylesheet" href="./src/styles.css?v=4" />
+  <script src="./src/scanner.js?v=4"></script>
+  <script type="module" src="./src/app.js?v=4"></script>
 
 </head>
 
@@ -124,6 +124,19 @@
       <div class="success-title">Account Created!</div>
       <div class="success-sub">Welcome to ReGenX. Redirecting you...</div>
     </div>
+
+    <!-- RESET BUTTON -->
+    <div style="position:relative; z-index:1; text-align:center; margin-top:12px;">
+      <button onclick="resetAppData()" style="
+        background: none; border: none; color: rgba(100,116,139,0.6);
+        font-size: 12px; cursor: pointer; padding: 6px 12px;
+        border-radius: 8px; transition: all 0.2s; font-family: 'Inter', sans-serif;
+        text-decoration: underline; text-underline-offset: 2px;
+      " onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='rgba(100,116,139,0.6)'">
+        🗑 Reset All App Data
+      </button>
+    </div>
+
   </div>
 
   <!-- ════════ APP SHELL ════════ -->

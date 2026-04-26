@@ -53,6 +53,21 @@ window.showToast = function(msg) {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
+window.resetAppData = function() {
+  if (!confirm('⚠ This will delete ALL registered accounts, orders, and data. The app will reset to a fresh state. Continue?')) return;
+  // Remove all keys that start with our prefix
+  const keysToRemove = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const k = window.localStorage.key(i);
+    if (k && k.startsWith(STORAGE_KEY_PREFIX)) keysToRemove.push(k);
+  }
+  keysToRemove.forEach(k => window.localStorage.removeItem(k));
+  // Also clear theme preference
+  window.localStorage.removeItem('regenx-theme');
+  // Reload fresh
+  window.location.reload();
+}
+
 window.fetchWeather = async function(lat, lng) {
   if (!lat || !lng) { lat = 28.5355; lng = 77.3910; } // Fallback to Noida coords if undefined
   try {
