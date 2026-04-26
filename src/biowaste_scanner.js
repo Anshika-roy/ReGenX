@@ -85,7 +85,32 @@ const BioScanner = (() => {
               ${__apiKey ? 'Real-Time AI Active' : 'Smart Vision Mode'}
             </div>
           </div>
-          <button class="scanner-settings-btn" onclick="BioScanner.__toggleSettings()" title="AI Settings">⚙️</button>
+          <div style="display:flex; gap:12px; align-items:center;">
+            <button class="scanner-settings-btn" onclick="BioScanner.__toggleInfo()" title="How it works">ⓘ</button>
+            <button class="scanner-settings-btn" onclick="BioScanner.__toggleSettings()" title="AI Settings">⚙️</button>
+          </div>
+        </div>
+
+        <!-- How it Works Overlay -->
+        <div id="bws-info-overlay" style="display:none; position:absolute; top:70px; right:20px; left:20px; bottom:20px; background:rgba(0,0,0,0.95); backdrop-filter:blur(10px); z-index:100; border-radius:15px; padding:24px; color:#fff; overflow-y:auto; border:1px solid rgba(255,255,255,0.1); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                <h3 style="margin:0; font-size:20px; color:#10b981;">How the AI Scanner Works</h3>
+                <button onclick="BioScanner.__toggleInfo()" style="background:none; border:none; color:#fff; font-size:24px; cursor:pointer;">×</button>
+            </div>
+            <div style="font-size:14px; line-height:1.6; color:#ccc;">
+                <p>The scanner uses your camera and <strong>Advanced Vision AI</strong> (GPT-4o / Claude 3) to physically inspect your waste. It provides a professional audit including:</p>
+                <ul style="padding-left:20px; margin-bottom:20px;">
+                    <li style="margin-bottom:10px;"><strong>Segregation Score (0–100):</strong> A visual score based on what's in the bin.</li>
+                    <li style="margin-bottom:10px;"><strong>Item Detection:</strong> Every item is identified and flagged if it is a contaminant (Plastic, Metal, Toxic).</li>
+                    <li style="margin-bottom:10px;"><strong>Organic Content %:</strong> Estimates the total usable bio-mass for biogas.</li>
+                    <li style="margin-bottom:10px;"><strong>Biogas Suitability:</strong> Rated as <em>Ideal, Acceptable, Marginal,</em> or <em>Reject</em>.</li>
+                    <li style="margin-bottom:10px;"><strong>Actionable Recommendations:</strong> Specific AI advice like "Remove the plastic bag from the left corner."</li>
+                    <li style="margin-bottom:10px;"><strong>Action Required:</strong> Tells you if the batch needs sorting before the rider arrives.</li>
+                </ul>
+                <div style="background:rgba(16,185,129,0.1); padding:15px; border-radius:10px; border:1px solid #10b981;">
+                    <small style="color:#10b981;">💡 Tip: Ensure good lighting for the most accurate Biogas Suitability results.</small>
+                </div>
+            </div>
         </div>
 
         <!-- AI Settings Panel -->
@@ -155,6 +180,16 @@ const BioScanner = (() => {
             s.style.display = 'block'; m.style.opacity = '0.2'; m.style.pointerEvents = 'none';
         } else {
             s.style.display = 'none'; m.style.opacity = '1'; m.style.pointerEvents = 'auto';
+        }
+    }
+
+    function __toggleInfo() {
+        const i = document.getElementById('bws-info-overlay');
+        const m = document.getElementById('bws-main-view');
+        if (i.style.display === 'none') {
+            i.style.display = 'block'; m.style.opacity = '0.2'; m.style.pointerEvents = 'none';
+        } else {
+            i.style.display = 'none'; m.style.opacity = '1'; m.style.pointerEvents = 'auto';
         }
     }
 
@@ -764,7 +799,7 @@ const BioScanner = (() => {
     }
 
     return {
-        open, stop, handleFileUpload, __back, __setMode, __clickUpload, __startCamera, __captureFrame, __retake, __analyse, __applyResult, __toggleSettings, __saveApiKey, __updateProvider
+        open, stop, handleFileUpload, __back, __setMode, __clickUpload, __startCamera, __captureFrame, __retake, __analyse, __applyResult, __toggleSettings, __toggleInfo, __saveApiKey, __updateProvider
     };
 
 })();
