@@ -13,8 +13,8 @@ const BioScanner = (() => {
     let __imageB64 = null;
     let __opts = {};
     let __apiKey = '';
-    let __aiProvider = 'openai'; // Default to OpenAI for expert biogas analysis
-    let __tfModel = null; 
+    let __aiProvider = 'gemini'; 
+    let __tfModel = null; // Real AI Model
 
     // ── Storage helpers ────────────────────────────────────────────────────────
     const __storage = {
@@ -85,32 +85,7 @@ const BioScanner = (() => {
               ${__apiKey ? 'Real-Time AI Active' : 'Smart Vision Mode'}
             </div>
           </div>
-          <div style="display:flex; gap:12px; align-items:center;">
-            <button class="scanner-settings-btn" onclick="BioScanner.__toggleInfo()" title="How it works">ⓘ</button>
-            <button class="scanner-settings-btn" onclick="BioScanner.__toggleSettings()" title="AI Settings">⚙️</button>
-          </div>
-        </div>
-
-        <!-- How it Works Overlay -->
-        <div id="bws-info-overlay" style="display:none; position:absolute; top:70px; right:20px; left:20px; bottom:20px; background:rgba(0,0,0,0.95); backdrop-filter:blur(10px); z-index:100; border-radius:15px; padding:24px; color:#fff; overflow-y:auto; border:1px solid rgba(255,255,255,0.1); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                <h3 style="margin:0; font-size:20px; color:#10b981;">How the AI Scanner Works</h3>
-                <button onclick="BioScanner.__toggleInfo()" style="background:none; border:none; color:#fff; font-size:24px; cursor:pointer;">×</button>
-            </div>
-            <div style="font-size:14px; line-height:1.6; color:#ccc;">
-                <p>The scanner uses your camera and <strong>Advanced Vision AI</strong> (GPT-4o / Claude 3) to physically inspect your waste. It provides a professional audit including:</p>
-                <ul style="padding-left:20px; margin-bottom:20px;">
-                    <li style="margin-bottom:10px;"><strong>Segregation Score (0–100):</strong> A visual score based on what's in the bin.</li>
-                    <li style="margin-bottom:10px;"><strong>Item Detection:</strong> Every item is identified and flagged if it is a contaminant (Plastic, Metal, Toxic).</li>
-                    <li style="margin-bottom:10px;"><strong>Organic Content %:</strong> Estimates the total usable bio-mass for biogas.</li>
-                    <li style="margin-bottom:10px;"><strong>Biogas Suitability:</strong> Rated as <em>Ideal, Acceptable, Marginal,</em> or <em>Reject</em>.</li>
-                    <li style="margin-bottom:10px;"><strong>Actionable Recommendations:</strong> Specific AI advice like "Remove the plastic bag from the left corner."</li>
-                    <li style="margin-bottom:10px;"><strong>Action Required:</strong> Tells you if the batch needs sorting before the rider arrives.</li>
-                </ul>
-                <div style="background:rgba(16,185,129,0.1); padding:15px; border-radius:10px; border:1px solid #10b981;">
-                    <small style="color:#10b981;">💡 Tip: Ensure good lighting for the most accurate Biogas Suitability results.</small>
-                </div>
-            </div>
+          <button class="scanner-settings-btn" onclick="BioScanner.__toggleSettings()" title="AI Settings">⚙️</button>
         </div>
 
         <!-- AI Settings Panel -->
@@ -119,11 +94,10 @@ const BioScanner = (() => {
           
           <div class="form-group">
             <label class="form-label">AI Provider</label>
-                        <select id="bws-ai-provider" onchange="BioScanner.__updateProvider(this.value)" style="width:100%; padding:8px; border-radius:6px; background:#111; color:#fff; border:1px solid #444;">
-                            <option value="openai" ${__aiProvider === 'openai' ? 'selected' : ''}>OpenAI (GPT-4o Vision)</option>
-                            <option value="gemini" ${__aiProvider === 'gemini' ? 'selected' : ''}>Google Gemini 1.5</option>
-                            <option value="anthropic" ${__aiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude 3</option>
-                        </select>
+            <select id="bws-ai-provider" class="form-select" onchange="BioScanner.__updateProvider()">
+              <option value="gemini" ${__aiProvider === 'gemini' ? 'selected' : ''}>Google Gemini (1.5 Flash)</option>
+              <option value="anthropic" ${__aiProvider === 'anthropic' ? 'selected' : ''}>Anthropic Claude (3.5 Sonnet)</option>
+            </select>
           </div>
 
           <div class="form-group">
@@ -183,18 +157,8 @@ const BioScanner = (() => {
         }
     }
 
-    function __toggleInfo() {
-        const i = document.getElementById('bws-info-overlay');
-        const m = document.getElementById('bws-main-view');
-        if (i.style.display === 'none') {
-            i.style.display = 'block'; m.style.opacity = '0.2'; m.style.pointerEvents = 'none';
-        } else {
-            i.style.display = 'none'; m.style.opacity = '1'; m.style.pointerEvents = 'auto';
-        }
-    }
-
-    function __updateProvider(val) {
-        __aiProvider = val;
+    function __updateProvider() {
+        __aiProvider = document.getElementById('bws-ai-provider').value;
     }
 
     async function __saveApiKey() {
@@ -228,7 +192,7 @@ const BioScanner = (() => {
         reader.onload = e => {
             const dataURL = e.target.result;
             __imageB64 = dataURL.split(',')[1];
-
+            
             // Sync with canvas for analysis
             const img = new Image();
             img.onload = () => {
@@ -340,11 +304,10 @@ const BioScanner = (() => {
 
         if (__apiKey) {
             try {
-                if (__aiProvider === 'openai') await __callOpenAI();
-                else if (__aiProvider === 'gemini') await __callGemini();
+                if (__aiProvider === 'gemini') await __callGemini();
                 else await __callAnthropic();
             } catch (err) {
-                console.error('[BioScanner] Cloud AI Error:', err);
+                console.error('[BioScanner] AI Error:', err);
                 __toast('⚠ Cloud AI Failed. Using Local AI.');
                 __displayResult(await __realLocalAI());
             }
@@ -361,298 +324,82 @@ const BioScanner = (() => {
         const canvas = document.getElementById('bws-canvas');
         if (!__tfModel) {
             __toast('⌛ AI Model still loading...');
-            return __smartSimulation();
+            return __smartSimulation(); 
         }
 
         const predictions = await __tfModel.classify(canvas);
+        console.log('[BioScanner] AI Predictions:', predictions);
 
-        // ── WASTE DOMAIN INTERPRETER (Professional Lexicon) ──────────────────
-        const WASTE_MAP = {
-            // 🍎 ORGANIC – HIGHLY ACCEPTABLE
-            fruit: {
-                name: 'Biogenic Bio-Mass',
-                type: 'Organic',
-                cn: '20:1',
-                moist: '85%',
-                biodegradable: true,
-                digestion: 'Fast',
-                biogasYield: 'High',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                reason: 'Ideal for anaerobic digestion',
-                emoji: '🍎'
-            },
-
-            banana: {
-                name: 'High-Sugar Bio-Mass',
-                type: 'Organic',
-                cn: '30:1',
-                moist: '75%',
-                biodegradable: true,
-                digestion: 'Very Fast',
-                biogasYield: 'Very High',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                reason: 'Excellent methane producer',
-                emoji: '🍌'
-            },
-
-            vegetable: {
-                name: 'Leafy Bio-Mass',
-                type: 'Organic',
-                cn: '15:1',
-                moist: '90%',
-                biodegradable: true,
-                digestion: 'Fast',
-                biogasYield: 'Medium',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                reason: 'Nitrogen rich, balances carbon waste',
-                emoji: '🥬'
-            },
-
-            food: {
-                name: 'Mixed Food Waste',
-                type: 'Organic',
-                cn: '18:1',
-                moist: '75%',
-                biodegradable: true,
-                digestion: 'Fast',
-                biogasYield: 'High',
-                contaminationRisk: 'Medium',
-                acceptable: true,
-                reason: 'Needs segregation before processing',
-                emoji: '🍲'
-            },
-
-            // 🟡 CONDITIONAL (NEEDS CONTROL)
-            bread: {
-                name: 'High-Starch Organic',
-                type: 'Organic',
-                cn: '30:1',
-                moist: '35%',
-                biodegradable: true,
-                digestion: 'Moderate',
-                biogasYield: 'Medium',
-                contaminationRisk: 'Medium',
-                acceptable: true,
-                condition: 'Limit quantity to avoid acidity',
-                reason: 'Can disturb pH balance in digester',
-                emoji: '🍞'
-            },
-
-            meat: {
-                name: 'Proteinaceous Waste',
-                type: 'Organic',
-                cn: '5:1',
-                moist: '70%',
-                biodegradable: true,
-                digestion: 'Slow',
-                biogasYield: 'Medium',
-                contaminationRisk: 'High',
-                acceptable: false,
-                reason: 'Causes odor, pathogens, and ammonia toxicity',
-                emoji: '🥩'
-            },
-
-            dairy: {
-                name: 'Lipid-Rich Waste',
-                type: 'Organic',
-                cn: '10:1',
-                moist: '80%',
-                biodegradable: true,
-                digestion: 'Slow',
-                biogasYield: 'High',
-                contaminationRisk: 'High',
-                acceptable: false,
-                reason: 'Forms scum layer, disrupts digestion',
-                emoji: '🥛'
-            },
-
-            // 🌿 CARBON SOURCES (BALANCING MATERIAL)
-            dryLeaves: {
-                name: 'Dry Leaf Litter',
-                type: 'Carbon-Source',
-                cn: '60:1',
-                moist: '10%',
-                biodegradable: true,
-                digestion: 'Slow',
-                biogasYield: 'Low',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                role: 'Bulking agent',
-                reason: 'Balances wet waste C/N ratio',
-                emoji: '🍂'
-            },
-
-            sawdust: {
-                name: 'Wood Residue',
-                type: 'Carbon-Source',
-                cn: '400:1',
-                moist: '8%',
-                biodegradable: true,
-                digestion: 'Very Slow',
-                biogasYield: 'Very Low',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                role: 'Composting only',
-                reason: 'Not suitable for biogas, but good for compost',
-                emoji: '🪵'
-            },
-
-            paper: {
-                name: 'Cellulosic Waste',
-                type: 'Carbon-Source',
-                cn: '100:1',
-                moist: '10%',
-                biodegradable: true,
-                digestion: 'Slow',
-                biogasYield: 'Low',
-                contaminationRisk: 'Low',
-                acceptable: true,
-                role: 'Carbon balancer',
-                emoji: '📄'
-            },
-
-            cardboard: {
-                name: 'High-Carbon Bulking Agent',
-                type: 'Carbon-Source',
-                cn: '350:1',
-                moist: '12%',
-                biodegradable: true,
-                digestion: 'Very Slow',
-                biogasYield: 'Very Low',
-                acceptable: true,
-                role: 'Structure support',
-                emoji: '📦'
-            },
-
-            // ❌ NON-ACCEPTABLE (REJECT)
-            plastic: {
-                name: 'Polymer Inhibitor',
-                type: 'Inorganic',
-                biodegradable: false,
-                acceptable: false,
-                reason: 'Non-biodegradable, blocks digestion',
-                action: 'Reject & send to recycling',
-                emoji: '🥤'
-            },
-
-            glass: {
-                name: 'Silica Waste',
-                type: 'Inorganic',
-                biodegradable: false,
-                acceptable: false,
-                reason: 'Non-degradable, damages machinery',
-                action: 'Recycle separately',
-                emoji: '🍶'
-            },
-
-            metal: {
-                name: 'Metallic Waste',
-                type: 'Inorganic',
-                biodegradable: false,
-                acceptable: false,
-                reason: 'Causes mechanical damage',
-                action: 'Send to scrap recycling',
-                emoji: '🥫'
-            },
-
-            sanitary: {
-                name: 'Sanitary Waste',
-                type: 'Hazardous',
-                biodegradable: false,
-                acceptable: false,
-                reason: 'Biohazard risk',
-                action: 'Incineration required',
-                emoji: '🧻'
-            },
-
-            battery: {
-                name: 'Toxic Chemical Waste',
-                type: 'Hazardous',
-                biodegradable: false,
-                acceptable: false,
-                reason: 'Heavy metals contaminate system',
-                action: 'Hazardous disposal',
-                emoji: '🔋'
-            }
-        };
+        // Map AI predictions to our Waste Categories
+        const organicKeywords = ['fruit', 'banana', 'orange', 'apple', 'veg', 'leaf', 'plant', 'food', 'bread', 'meat', 'egg', 'produce'];
+        
+        // EXPANDED: Electronic & Industrial Waste Keywords
+        const inorganicKeywords = [
+            'plastic', 'bottle', 'cup', 'wrapper', 'can', 'metal', 'glass', 'paper', 'cardboard', 'bag', 
+            'phone', 'mouse', 'keyboard', 'cable', 'wire', 'circuit', 'board', 'component', 'hardware', 
+            'electronic', 'modem', 'switch', 'router', 'battery', 'tool', 'machine', 'gear', 'tv', 'monitor'
+        ];
 
         let detectedItems = [];
         let organicConfidence = 0;
         let inorganicConfidence = 0;
-        let toxicConfidence = 0;
-        let carbonConfidence = 0;
+        let isEWaste = false;
 
         predictions.forEach(p => {
-            const label = p.className.toLowerCase();
-            let found = false;
+            const name = p.className.toLowerCase();
+            const isOrg = organicKeywords.some(k => name.includes(k));
+            const isInorg = inorganicKeywords.some(k => name.includes(k));
+            
+            // Check for E-Waste specifically
+            if (['circuit', 'board', 'electronic', 'component'].some(k => name.includes(k))) isEWaste = true;
 
-            for (let key in WASTE_MAP) {
-                if (label.includes(key)) {
-                    const data = WASTE_MAP[key];
-                    detectedItems.push({
-                        name: data.name,
-                        category: data.type,
-                        isContaminant: data.type !== 'Organic' && data.type !== 'Carbon-Source',
-                        emoji: data.emoji,
-                        details: `C:N ${data.cn} | Moist: ${data.moist}`
-                    });
-
-                    if (data.type === 'Organic') organicConfidence += p.probability;
-                    if (data.type === 'Inorganic') inorganicConfidence += p.probability;
-                    if (data.type === 'Toxic') toxicConfidence += p.probability;
-                    if (data.type === 'Carbon-Source') carbonConfidence += p.probability;
-
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found && p.probability > 0.15) {
-                // Fallback for unknown items
-                const isLikelyOrganic = (label.includes('dog') || label.includes('cat') || label.includes('bird')); // MobileNet quirk
-                detectedItems.push({
-                    name: p.className.split(',')[0],
-                    category: isLikelyOrganic ? 'Potential Bio-Mass' : 'Unidentified Material',
-                    isContaminant: !isLikelyOrganic,
-                    emoji: '❓',
-                    details: 'Domain mapping pending...'
+            if (isOrg) {
+                detectedItems.push({ name: p.className.split(',')[0], category: 'Organic', isContaminant: false, emoji: '🍃' });
+                organicConfidence += p.probability;
+            } else if (isInorg) {
+                const isToxic = ['circuit', 'battery', 'hardware'].some(k => name.includes(k));
+                detectedItems.push({ 
+                    name: p.className.split(',')[0], 
+                    category: isToxic ? 'Hazardous' : 'Inorganic', 
+                    isContaminant: true, 
+                    emoji: isToxic ? '☢️' : '📦' 
                 });
+                inorganicConfidence += p.probability;
             }
         });
 
-        // ── WASTE LOGISTICS SCORING ──────────────────────────────────────────
+        // Final Logic
         let score = 95;
-        if (toxicConfidence > 0.05) score = 10;
-        else if (inorganicConfidence > 0.1) score = 100 - (inorganicConfidence * 180);
-        else if (carbonConfidence > 0.2) score = 85; // Carbon sources are okay but need mixing
+        
+        // E-Waste is a total fail for Biogas
+        if (isEWaste) {
+            score = 15;
+        } else if (inorganicConfidence > 0.1) {
+            score = 100 - (inorganicConfidence * 160);
+        }
+        
+        if (!isEWaste && organicConfidence < 0.05 && inorganicConfidence < 0.05) {
+            score = 35; // Unidentified debris
+        }
 
         score = Math.max(5, Math.min(100, Math.round(score)));
 
         return {
             segregationScore: score,
             overallGrade: score > 90 ? 'Excellent' : score > 75 ? 'Good' : score > 40 ? 'Fair' : 'Poor',
-            gradeSummary: toxicConfidence > 0.05 ? "CRITICAL: Toxic inhibitors detected in flow." :
-                score > 85 ? "High-purity biogenic stream detected." : "Mixed stream with inhibitor presence.",
-            detectedItems: detectedItems.slice(0, 4),
-            recommendations: score < 75 ? [{ icon: '🧤', text: 'Inhibitors detected. Manual segregation required before digestion.' }] :
-                [{ icon: '⚡', text: 'Optimal feedstock. High methane potential confirmed.' }],
-            biogasSuitability: score > 80 ? 'Ideal' : score > 50 ? 'Acceptable' : 'Reject',
-            estimatedOrganicPercent: Math.round((organicConfidence + carbonConfidence * 0.5) * 100),
+            gradeSummary: isEWaste ? "CRITICAL: Electronic waste detected. Toxic to biogas systems." : `AI identified "${predictions[0].className.split(',')[0]}" with ${Math.round(predictions[0].probability * 100)}% confidence.`,
+            detectedItems: detectedItems.length ? detectedItems : [{ name: predictions[0].className.split(',')[0], category: 'Unknown', isContaminant: true, emoji: '❓' }],
+            recommendations: score < 70 ? [{ icon: '☢️', text: 'Hazardous/Inorganic waste detected. REJECT BATCH.' }] : [{ icon: '✨', text: 'Clean batch confirmed by AI.' }],
+            biogasSuitability: score > 75 ? 'Ideal' : 'Reject',
+            estimatedOrganicPercent: isEWaste ? 2 : Math.round(organicConfidence * 100),
             actionRequired: score < 80,
-            stats: {
-                g: Math.round(organicConfidence * 100),
-                r: Math.round(carbonConfidence * 100),
-                b: Math.round(inorganicConfidence * 100),
-                v: Math.round(toxicConfidence * 100)
-            }
+            stats: { g: Math.round(organicConfidence*100), r: isEWaste ? 100 : 0, b: Math.round(inorganicConfidence*100), v: isEWaste ? 99 : 0 }
         };
     }
 
     // ── Smart Vision Simulation (Fallback) ──────────────────────────────────
     function __smartSimulation() {
+        // (Existing logic kept as a backup)
         return {
             segregationScore: 50,
             overallGrade: 'Fair',
@@ -666,48 +413,7 @@ const BioScanner = (() => {
         };
     }
 
-    // ── OpenAI GPT-4o Vision Integration ────────────────────────────────────
-    async function __callOpenAI() {
-        const prompt = `Act as a Bio-Energy and Composting Engineer. Analyze this waste image for Biogas suitability.
-        Return ONLY a JSON object with this exact structure:
-        {
-          "segregationScore": number (0-100),
-          "overallGrade": "Excellent" | "Good" | "Fair" | "Poor",
-          "gradeSummary": "string (Focus on Biogas/Compost potential)",
-          "detectedItems": [{"name": "string", "category": "Organic"|"Inorganic"|"Toxic", "isContaminant": boolean, "emoji": "string", "details": "C:N ratio | Moisture%"}],
-          "biogasSuitability": "Ideal" | "Acceptable" | "Reject",
-          "estimatedOrganicPercent": number,
-          "recommendations": [{"icon": "string", "text": "string"}],
-          "stats": {"g": number, "r": number, "b": number, "v": number}
-        }
-        Be very strict. If you see plastic, E-waste, or chemicals, the score must be below 40.`;
-
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${__apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: "gpt-4o",
-                messages: [{
-                    role: "user",
-                    content: [
-                        { type: "text", text: prompt },
-                        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${__imageB64}` } }
-                    ]
-                }],
-                response_format: { type: "json_object" }
-            })
-        });
-
-        const data = await response.json();
-        if (data.choices && data.choices[0]) {
-            __displayResult(JSON.parse(data.choices[0].message.content));
-        } else throw new Error('Invalid OpenAI Response');
-    }
-
-    // ── Google Gemini Integration ───────────────────────────────────────────
+    // ── AI Implementation ──────────────────────────────────────────────────────
     const SYSTEM_PROMPT = 'Analyze this waste image. Return ONLY JSON: { "segregationScore": 0-100, "overallGrade": "Excellent|Good|Fair|Poor|Rejected", "gradeSummary": "...", "detectedItems": [{"name": "...", "category": "...", "isContaminant": bool, "emoji": "..."}], "biogasSuitability": "...", "estimatedOrganicPercent": 0-100, "actionRequired": bool }';
 
     async function __callGemini() {
@@ -799,7 +505,7 @@ const BioScanner = (() => {
     }
 
     return {
-        open, stop, handleFileUpload, __back, __setMode, __clickUpload, __startCamera, __captureFrame, __retake, __analyse, __applyResult, __toggleSettings, __toggleInfo, __saveApiKey, __updateProvider
+        open, stop, handleFileUpload, __back, __setMode, __clickUpload, __startCamera, __captureFrame, __retake, __analyse, __applyResult, __toggleSettings, __saveApiKey, __updateProvider
     };
 
 })();
