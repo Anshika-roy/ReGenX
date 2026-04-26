@@ -67,8 +67,12 @@
         <input class="form-input" id="reg-org" type="text" placeholder="e.g. Omega Hostel">
       </div>
       <div class="form-group">
-        <label class="form-label">GPS Location</label>
-        <button class="btn btn-secondary btn-full" id="btn-detect-gps" onclick="detectGPS()">📍 Detect My Location</button>
+        <label class="form-label">Location (Search or GPS)</label>
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+          <input class="form-input" id="loc-search" type="text" placeholder="e.g. Amity Noida" style="flex:1;">
+          <button class="btn btn-secondary" onclick="searchLocation()" style="padding:10px;">🔍</button>
+        </div>
+        <button class="btn btn-secondary btn-full" id="btn-detect-gps" onclick="detectGPS()">📍 Auto-Detect GPS</button>
         <div id="gps-status" class="status-text muted" style="margin-top:6px; font-size:12px;">Waiting for location...</div>
         <div id="reg-map"></div>
       </div>
@@ -123,7 +127,7 @@
           <div class="topbar-name" id="tb-name">—</div>
           <div class="topbar-role" id="tb-role">—</div>
         </div>
-        <div class="topbar-avatar" id="tb-avatar"></div>
+        <div class="topbar-avatar" id="tb-avatar" style="cursor:pointer;" onclick="openSettings()" title="Profile Settings"></div>
         <button class="btn btn-ghost btn-sm" onclick="doLogout()">Logout</button>
       </div>
     </header>

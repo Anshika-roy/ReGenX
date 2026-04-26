@@ -114,6 +114,47 @@ window.detectGPS = function() {
   );
 }
 
+window.searchLocation = async function() {
+  const query = document.getElementById('loc-search').value.trim();
+  const st = document.getElementById('gps-status');
+  if(!query) { st.innerHTML = `<span style="color:var(--red)">⚠ Enter a location (e.g., "Amity Noida").</span>`; return; }
+  
+  st.textContent = "Searching global maps...";
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    if(data && data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lng = parseFloat(data[0].lon);
+      detectedPos = { lat, lng };
+      st.innerHTML = `<span style="color:var(--green)">✓ Found: ${data[0].display_name.split(',')[0]}</span>`;
+      
+      const mapEl = document.getElementById('reg-map');
+      mapEl.classList.add('show');
+      
+      if(!regMapInstance) {
+        regMapInstance = L.map('reg-map').setView([lat, lng], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(regMapInstance);
+        
+        const dragIco = L.divIcon({html:"<div style='width:18px;height:18px;background:var(--green);border-radius:50%;border:2px solid white;box-shadow:0 0 10px rgba(0,0,0,0.4);'></div>", className:''});
+        regMarker = L.marker([lat, lng], {icon: dragIco, draggable: true}).addTo(regMapInstance);
+        
+        regMarker.on('dragend', function(e) {
+          const mPos = regMarker.getLatLng();
+          detectedPos = { lat: mPos.lat, lng: mPos.lng };
+        });
+      } else {
+        regMapInstance.setView([lat, lng], 14);
+        regMarker.setLatLng([lat, lng]);
+      }
+    } else {
+      st.innerHTML = `<span style="color:var(--amber)">⚠ Not found. Try adding city name.</span>`;
+    }
+  } catch (err) {
+    st.innerHTML = `<span style="color:var(--red)">✗ Network error. Try again.</span>`;
+  }
+}
+
 window.doRegister = async function() {
   const name = document.getElementById('reg-name').value.trim();
   const org = document.getElementById('reg-org').value.trim();
@@ -531,6 +572,40 @@ window.confirmPickup = function(id) {
   saveOrder(o); closeModal(); refreshCurrentView();
 }
 window.closeModal = function() { document.getElementById('modal').classList.remove('open'); }
+
+window.openSettings = function() {
+  const html = `
+    <h3 class="modal-title">Account Settings</h3>
+    <p class="modal-sub">Manage your ReGenX Profile</p>
+    <div style="background:var(--bg); padding:16px; border-radius:12px; margin-bottom:20px;">
+      <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase;">Name</div>
+      <div style="font-weight:600; margin-bottom:12px;">${SESSION.name}</div>
+      <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase;">Entity</div>
+      <div style="font-weight:600; margin-bottom:12px;">${SESSION.org}</div>
+      <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase;">Role</div>
+      <div style="font-weight:600;">${SESSION.role.toUpperCase()}</div>
+    </div>
+    
+    <div class="modal-actions" style="justify-content: space-between;">
+      <button class="btn btn-outline-danger" onclick="deleteAccount()">Delete Account</button>
+      <div>
+        <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('modal-box').innerHTML = html;
+  document.getElementById('modal').classList.add('open');
+}
+
+window.deleteAccount = function() {
+  if(confirm("Are you sure you want to permanently delete your account? This action cannot be undone.")) {
+    window.localStorage.removeItem(STORAGE_KEY_PREFIX + 'acc:' + SESSION.id);
+    closeModal();
+    doLogout();
+    refreshLoginDropdown();
+    showToast("Account successfully deleted.");
+  }
+}
 
 // ════════ PLANT LOGIC ════════
 async function renderPlant(mc, fullRender) {
