@@ -881,6 +881,68 @@ window.deleteOrder = function(id) {
 }
 
 
+// ════════ OSRM REAL-ROAD ROUTING ENGINE ════════
+
+async function fetchOSRMRoute(waypoints) {
+  if (!waypoints || waypoints.length < 2) return null;
+  const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
+  try {
+    const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    if (d.code !== 'Ok' || !d.routes.length) return null;
+    const r = d.routes[0];
+    return {
+      geojson: r.geometry,
+      distance_km: (r.distance / 1000).toFixed(1),
+      duration_min: Math.round(r.duration / 60),
+      legs: r.legs.map(l => ({ distance_km: (l.distance/1000).toFixed(1), duration_min: Math.round(l.duration/60) }))
+    };
+  } catch { return null; }
+}
+
+async function fetchOSRMDurationMatrix(points) {
+  if (!points || points.length < 2) return null;
+  const coords = points.map(p => `${p.lng},${p.lat}`).join(';');
+  try {
+    const res = await fetch(`https://router.project-osrm.org/table/v1/driving/${coords}?annotations=duration`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.code === 'Ok' ? d.durations : null;
+  } catch { return null; }
+}
+
+function greedyTSP(matrix, startIdx) {
+  const n = matrix.length;
+  const visited = new Array(n).fill(false);
+  const order = [startIdx];
+  visited[startIdx] = true;
+  for (let s = 1; s < n; s++) {
+    const cur = order[order.length - 1];
+    let best = -1, bestT = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (!visited[j] && matrix[cur][j] != null && matrix[cur][j] < bestT) { best = j; bestT = matrix[cur][j]; }
+    }
+    if (best >= 0) { visited[best] = true; order.push(best); }
+  }
+  return order;
+}
+
+async function aiOptimizeJobs(riderLat, riderLng, jobs) {
+  if (jobs.length <= 1) return { jobs, savings_min: 0 };
+  const pts = [{ lat: riderLat, lng: riderLng }, ...jobs.map(j => ({ lat: j.providerLat, lng: j.providerLng }))];
+  const matrix = await fetchOSRMDurationMatrix(pts);
+  if (!matrix) return { jobs, savings_min: 0 };
+  const n = jobs.length;
+  const sub = Array.from({length: n}, (_, i) => Array.from({length: n}, (_, j) => matrix[i+1][j+1]));
+  const riderRow = matrix[0].slice(1);
+  const firstPick = riderRow.reduce((bi, t, i) => t < riderRow[bi] ? i : bi, 0);
+  const naiveTime = jobs.reduce((s, _, i) => s + (i > 0 ? sub[i-1][i] : (riderRow[0]||0)), 0);
+  const orderIdx = greedyTSP(sub, firstPick);
+  const optTime = orderIdx.reduce((s, idx, step) => s + (step === 0 ? (matrix[0][idx+1]||0) : (sub[orderIdx[step-1]][idx]||0)), 0);
+  return { jobs: orderIdx.map(i => jobs[i]), savings_min: Math.max(0, Math.round((naiveTime - optTime) / 60)) };
+}
+
 // ════════ RIDER LOGIC ════════
 async function renderRider(mc, fullRender) {
   const orders = getAllOrders();
@@ -910,47 +972,21 @@ async function renderRider(mc, fullRender) {
         </div>
         <div class="${tab !== 'analytics' ? 'desktop-only' : ''}">
           ${activeJobs.length ? `
-          <div class="glass-card" style="background:var(--green-light); border-color:var(--green); margin-bottom:16px;">
-            <div class="between">
-              <div>
-                <h4 style="color:var(--green-hover); margin-bottom:4px;">${activeJobs.length > 1 ? 'AI Batching Optimized' : 'Optimal Path Active'}</h4>
-                <p style="font-size:12px; color:var(--green-hover);">${activeJobs.length > 1 ? 'Combining routes to minimize fuel.' : 'Route optimized for lowest emissions.'}</p>
-              </div>
-              <div style="text-align:right;">
-                <div style="font-size:20px; font-weight:700; color:var(--green-hover);">~${(activeJobs.length * 2.4).toFixed(1)} L</div>
-                <div style="font-size:11px; color:var(--green-hover); text-transform:uppercase; font-weight:600;">Total Fuel Saved</div>
-              </div>
-            </div>
+          <div class="glass-card sensor-card" style="margin-bottom:16px; padding:16px; border-color:var(--green); background:var(--green-light);" id="rd-route-summary">
+            <div style="font-size:12px;color:var(--green-hover);display:flex;align-items:center;gap:8px;"><div class="bw-spinner" style="width:16px;height:16px;border-width:2px;"></div> AI computing optimal route…</div>
           </div>
           <div class="glass-card sensor-card" style="margin-bottom:16px; padding:16px; border-color:var(--border);">
-             <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:12px; text-transform:uppercase;">Live Environment Impact</div>
-             <div class="between" style="margin-bottom:8px;">
-               <div>🌧️ Weather</div>
-               <div style="font-weight:700; color:var(--text-muted);" id="rt-weather">Fetching...</div>
-             </div>
-             <div class="between" style="margin-bottom:8px;">
-               <div>🚗 Traffic Density</div>
-               <div style="font-weight:700; color:var(--green);" id="rt-traffic">Normal</div>
-             </div>
-             <div class="between">
-               <div>⏱️ AI Routing Adjust</div>
-               <div style="font-weight:700; color:var(--text-muted);" id="rt-ai-adj">+0 Mins</div>
-             </div>
+             <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:12px; text-transform:uppercase;">🌍 Live Conditions</div>
+             <div class="between" style="margin-bottom:8px;"><div>🌧️ Weather</div><div style="font-weight:700; color:var(--text-muted);" id="rt-weather">Fetching...</div></div>
+             <div class="between" style="margin-bottom:8px;"><div>🚗 Traffic</div><div style="font-weight:700; color:var(--green);" id="rt-traffic">Normal</div></div>
+             <div class="between"><div>⏱️ Weather Delay</div><div style="font-weight:700; color:var(--text-muted);" id="rt-ai-adj">+0 Mins</div></div>
           </div>
           <div class="glass-card sensor-card" style="padding:16px; border-color:var(--blue);">
-             <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:12px; text-transform:uppercase;">Vehicle Telemetry (Live)</div>
-             <div class="between" style="margin-bottom:8px;">
-               <div>🔋 Battery Level</div>
-               <div style="font-weight:700; color:var(--text-muted);" id="rt-batt">--</div>
-             </div>
-             <div class="between" style="margin-bottom:8px;">
-               <div>🌡️ Cargo Temp</div>
-               <div style="font-weight:700;" id="rt-temp">--</div>
-             </div>
-             <div class="between">
-               <div>⚙️ AI ETA Confidence</div>
-               <div style="font-weight:700; color:var(--blue);" id="rt-conf">94.2%</div>
-             </div>
+             <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:12px; text-transform:uppercase;">📡 Route Telemetry</div>
+             <div class="between" style="margin-bottom:8px;"><div>📍 Total Distance</div><div style="font-weight:700;" id="rt-total-dist">Calculating…</div></div>
+             <div class="between" style="margin-bottom:8px;"><div>⏱️ ETA</div><div style="font-weight:700; color:var(--blue);" id="rt-eta">Calculating…</div></div>
+             <div class="between" style="margin-bottom:8px;"><div>⛽ Fuel Saved</div><div style="font-weight:700; color:var(--green);" id="rt-fuel-saved">—</div></div>
+             <div class="between"><div>🔋 Battery</div><div style="font-weight:700;" id="rt-batt">--</div></div>
           </div>` : '<div class="empty-state">No active telemetry. Accept a job to see live data.</div>'}
         </div>
       </div>
@@ -974,47 +1010,105 @@ async function renderRider(mc, fullRender) {
       `).join('');
     }
     
-    // Map Logic
-    setTimeout(() => {
-      if(!document.getElementById('rider-map')) return;
-      if(rMap) { rMap.remove(); rMap=null; }
+    // ── Real OSRM Road Routing ──
+    setTimeout(async () => {
+      if (!document.getElementById('rider-map')) return;
+      if (rMap) { rMap.remove(); rMap = null; }
       rMap = L.map('rider-map').setView([SESSION.lat, SESSION.lng], 13);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(rMap);
-      
-      const rIco = L.divIcon({html:"<div style='width:16px;height:16px;background:var(--blue);border-radius:50%;border:2px solid white;box-shadow:0 0 10px rgba(0,0,0,0.5);'></div>", className:''});
-      const rMarker = L.marker([SESSION.lat, SESSION.lng], {icon:rIco, draggable:true}).addTo(rMap).bindPopup("You (Rider) — <b>Drag me</b> to update exact GPS!").openPopup();
-      
-      rMarker.on('dragend', function(e) {
-        const mPos = rMarker.getLatLng();
-        SESSION.lat = mPos.lat; SESSION.lng = mPos.lng;
-        DB.set('acc:'+SESSION.id, SESSION);
-        refreshCurrentView(false); // Update polyline and distance silently
-      });
-      
-      if(activeJobs.length) {
-        const pIco = L.divIcon({html:"<div style='width:16px;height:16px;background:var(--amber);border-radius:50%;border:2px solid white;'></div>", className:''});
-        const latlngs = [[SESSION.lat, SESSION.lng]];
-        
-        activeJobs.forEach(job => {
-          L.marker([job.providerLat, job.providerLng], {icon:pIco}).addTo(rMap).bindPopup("<b>Pickup:</b> "+job.providerOrg + "<br><i>Optimal transport window active.</i>");
-          latlngs.push([job.providerLat, job.providerLng]);
-          
-          const plant = DB.get('acc:'+job.plantId);
-          if (plant) {
-            const pltIco = L.divIcon({html:"<div style='width:16px;height:16px;background:var(--green);border-radius:50%;border:2px solid white;'></div>", className:''});
-            L.marker([plant.lat, plant.lng], {icon:pltIco}).addTo(rMap).bindPopup("<b>Plant:</b> "+plant.org);
-            latlngs.push([plant.lat, plant.lng]);
-          }
-        });
-        
-        // Optimal Routing Simulation (Curved polyline for "Real" feel)
-        const polyline = L.polyline(latlngs, {color: 'var(--amber)', weight: 5, opacity: 0.6, dashArray: '10, 10'}).addTo(rMap);
-        rMap.fitBounds(polyline.getBounds(), {padding:[50,50]});
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(rMap);
 
-        // Real-time distance update
-        const firstJob = activeJobs[0];
-        const dist = distanceKm(SESSION.lat, SESSION.lng, firstJob.providerLat, firstJob.providerLng);
-        showToast(`🛰️ GPS Update: ${dist.toFixed(2)}km to next pickup.`);
+      const rIco = L.divIcon({ html: "<div style='width:18px;height:18px;background:var(--blue);border-radius:50%;border:3px solid white;box-shadow:0 0 12px rgba(59,130,246,0.8);'></div>", className: '' });
+      const rMarker = L.marker([SESSION.lat, SESSION.lng], { icon: rIco, draggable: true }).addTo(rMap)
+        .bindPopup('📍 You (Rider) — <b>Drag to correct GPS</b>').openPopup();
+      rMarker.on('dragend', () => {
+        const p = rMarker.getLatLng();
+        SESSION.lat = p.lat; SESSION.lng = p.lng;
+        DB.set('acc:' + SESSION.id, SESSION);
+        refreshCurrentView(false);
+      });
+
+      if (activeJobs.length) {
+        // 1. AI-optimize pickup order via OSRM duration matrix + greedy TSP
+        const { jobs: optimizedJobs, savings_min } = await aiOptimizeJobs(SESSION.lat, SESSION.lng, activeJobs);
+
+        // 2. Build waypoints: rider → optimized pickups → plant
+        const plant = DB.get('acc:' + optimizedJobs[0].plantId);
+        const waypoints = [
+          { lat: SESSION.lat, lng: SESSION.lng },
+          ...optimizedJobs.map(j => ({ lat: j.providerLat, lng: j.providerLng })),
+          ...(plant ? [{ lat: plant.lat, lng: plant.lng }] : [])
+        ];
+
+        // 3. Fetch real road route from OSRM
+        const route = await fetchOSRMRoute(waypoints);
+
+        // 4. Numbered pickup markers
+        optimizedJobs.forEach((job, i) => {
+          const ico = L.divIcon({
+            html: `<div style="width:28px;height:28px;background:#F59E0B;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:white;box-shadow:0 2px 8px rgba(0,0,0,0.4);">${i + 1}</div>`,
+            className: '', iconAnchor: [14, 14]
+          });
+          const leg = route && route.legs[i];
+          L.marker([job.providerLat, job.providerLng], { icon: ico }).addTo(rMap)
+            .bindPopup(`<b>Stop ${i + 1}: ${job.providerOrg}</b><br>${job.kg}kg ${job.wasteType}${leg ? `<br>⏱ ~${leg.duration_min} min · ${leg.distance_km} km` : ''}`);
+        });
+
+        // Plant marker
+        if (plant) {
+          const pltIco = L.divIcon({
+            html: `<div style="width:32px;height:32px;background:#0D9488;border-radius:8px;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4);">🏭</div>`,
+            className: '', iconAnchor: [16, 16]
+          });
+          L.marker([plant.lat, plant.lng], { icon: pltIco }).addTo(rMap).bindPopup(`<b>Plant:</b> ${plant.org}`);
+        }
+
+        // 5. Draw real road route OR fallback to straight polyline
+        if (route) {
+          // Glow underlay + main route
+          L.geoJSON(route.geojson, { style: { color: '#34D399', weight: 9, opacity: 0.25, lineJoin: 'round' } }).addTo(rMap);
+          const routeLayer = L.geoJSON(route.geojson, { style: { color: '#0D9488', weight: 5, opacity: 0.9, lineJoin: 'round', lineCap: 'round' } }).addTo(rMap);
+          rMap.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+
+          // Update telemetry with REAL values
+          const distEl = document.getElementById('rt-total-dist');
+          const etaEl  = document.getElementById('rt-eta');
+          const fuelEl = document.getElementById('rt-fuel-saved');
+          if (distEl) { distEl.textContent = route.distance_km + ' km'; distEl.style.color = 'var(--text)'; }
+          if (etaEl)  { etaEl.textContent  = route.duration_min + ' min'; etaEl.style.color = 'var(--blue)'; }
+          if (fuelEl) { const saved = (parseFloat(route.distance_km) * 0.08).toFixed(2); fuelEl.textContent = saved + ' L'; fuelEl.style.color = 'var(--green)'; }
+
+          // Update summary panel
+          const summaryEl = document.getElementById('rd-route-summary');
+          if (summaryEl) {
+            const stopsHtml = optimizedJobs.map((j, i) => {
+              const leg = route.legs[i];
+              return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--border);">
+                <div style="width:22px;height:22px;background:var(--amber);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:white;flex-shrink:0;">${i+1}</div>
+                <div style="flex:1;font-size:13px;font-weight:600;">${j.providerOrg}</div>
+                ${leg ? `<div style="font-size:11px;color:var(--text-muted);">${leg.duration_min}min · ${leg.distance_km}km</div>` : ''}
+              </div>`;
+            }).join('');
+            summaryEl.innerHTML = `
+              <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--green-hover);margin-bottom:12px;">🤖 AI Optimized Route${savings_min > 0 ? ` · Saved ${savings_min} min vs naive order` : ''}</div>
+              ${stopsHtml}
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;">
+                <div style="width:22px;height:22px;background:var(--green);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;">🏭</div>
+                <div style="flex:1;font-size:13px;font-weight:600;">${plant ? plant.org : 'Plant'}</div>
+                ${route.legs[optimizedJobs.length] ? `<div style="font-size:11px;color:var(--text-muted);">${route.legs[optimizedJobs.length].duration_min}min · ${route.legs[optimizedJobs.length].distance_km}km</div>` : ''}
+              </div>
+            `;
+          }
+          showToast(`🛰️ OSRM Route: ${route.distance_km}km · ETA ${route.duration_min}min`);
+        } else {
+          // OSRM unreachable — fallback straight polyline
+          const latlngs = waypoints.map(w => [w.lat, w.lng]);
+          const poly = L.polyline(latlngs, { color: 'var(--amber)', weight: 4, opacity: 0.6, dashArray: '10,10' }).addTo(rMap);
+          rMap.fitBounds(poly.getBounds(), { padding: [50, 50] });
+          const summaryEl = document.getElementById('rd-route-summary');
+          if (summaryEl) summaryEl.innerHTML = '<div style="font-size:12px;color:var(--amber);">⚠️ Could not reach routing server. Showing straight-line estimate.</div>';
+          const dist = distanceKm(SESSION.lat, SESSION.lng, optimizedJobs[0].providerLat, optimizedJobs[0].providerLng);
+          showToast(`📍 Estimated ${dist.toFixed(2)}km to first pickup.`);
+        }
       }
     }, 100);
     
