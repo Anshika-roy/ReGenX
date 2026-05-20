@@ -159,7 +159,13 @@ h1, h2, h3, .heading { font-family: 'Space Grotesk', sans-serif; font-weight: 70
 @keyframes float1 { 100% { transform: translate(50px, 50px) scale(1.1); } }
 @keyframes float2 { 100% { transform: translate(-50px, -50px) scale(1.2); } }
 
-.login-box { position: relative; z-index: 1; width: 100%; max-width: 440px; }
+.login-box {
+  backdrop-filter: blur(32px) saturate(180%);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  background: var(--glass-bg);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 20px 60px rgba(13, 148, 136, 0.15);
+}
 .login-logo { font-size: 32px; display: flex; align-items: center; gap: 12px; font-family: 'Space Grotesk', sans-serif; font-weight: 800; margin-bottom: 8px; }
 .login-logo-icon { width: 42px; height: 42px; background: var(--green); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white; font-size: 20px; box-shadow: 0 4px 12px rgba(13, 148, 136, 0.4); }
 .login-tagline { color: var(--text-muted); margin-bottom: 24px; font-size: 15px; }
