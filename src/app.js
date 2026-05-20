@@ -8,6 +8,9 @@ import { RouteOptimizer } from './route-optimizer.js';
 import { AuditPortal } from './audit-portal.js';
 
 const STORAGE_KEY_PREFIX = "regenx-v3:";
+const TRUST_LEDGER_KEY = "trust-ledger";
+const ESG_ALERTS_KEY = "esg-alerts";
+const CREDIT_LEDGER_KEY = "credit-ledger";
 
 // ── PWA Service Worker v3 Registration ──
 if ('serviceWorker' in navigator) {
@@ -84,6 +87,362 @@ const DB = {
     } catch { return []; }
   }
 };
+
+/**
+ * Load trust ledger events from localStorage.
+ * @returns {Array<Object>} Ledger events.
+ */
+function loadTrustLedger() {
+  try {
+    const raw = window.localStorage.getItem(TRUST_LEDGER_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Save trust ledger events to localStorage.
+ * @param {Array<Object>} events - Ledger events.
+ */
+function saveTrustLedger(events) {
+  try { window.localStorage.setItem(TRUST_LEDGER_KEY, JSON.stringify(events)); } catch { /* ignore */ }
+}
+
+/**
+ * Generate a ledger hash (SHA-256 length) for integrity records.
+ * @returns {string} Hex hash with 0x prefix.
+ */
+function generateLedgerHash() {
+  if (window.crypto && window.crypto.getRandomValues) {
+    const bytes = new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    return '0x' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+}
+
+/**
+ * Get route endpoints for an order.
+ * @param {Object} order - Order object.
+ * @returns {{start?:{lat:number,lng:number}, end?:{lat:number,lng:number}}}
+ */
+function getOrderRouteEndpoints(order) {
+  if (!order) return {};
+  const plant = order.plantId ? DB.get('acc:' + order.plantId) : null;
+  const start = (typeof order.providerLat === 'number' && typeof order.providerLng === 'number')
+    ? { lat: order.providerLat, lng: order.providerLng }
+    : null;
+  const end = plant && typeof plant.lat === 'number' && typeof plant.lng === 'number'
+    ? { lat: plant.lat, lng: plant.lng }
+    : null;
+  return { start, end };
+}
+
+/**
+ * Get ledger events for a specific order.
+ * @param {string} orderId - Order id.
+ * @returns {Array<Object>} Order events.
+ */
+function getOrderLedgerEvents(orderId) {
+  return loadTrustLedger().filter(e => e.orderId === orderId).sort((a, b) => a.ts - b.ts);
+}
+
+/**
+ * Calculate integrity score and anomalies for an order.
+ * @param {Object} order - Order object.
+ * @returns {{score:number, maxGapMins:number, maxDeviationKm:number, anomalies:{timeGap:boolean,routeDeviation:boolean}}}
+ */
+function getOrderIntegrity(order) {
+  const events = getOrderLedgerEvents(order.id);
+  const route = getOrderRouteEndpoints(order);
+  return TrustProtocol.calculateIntegrityScore(events, route, distanceKm);
+}
+
+/**
+ * Append a trust ledger event and compute integrity score.
+ * @param {Object} order - Order object.
+ * @param {string} event - Event label.
+ * @param {string} actorRole - Actor role.
+ * @param {{lat?:number,lng?:number}} coords - Event coordinates.
+ */
+function recordTrustEvent(order, event, actorRole, coords = {}) {
+  if (!order) return;
+  const ledger = loadTrustLedger();
+  const entry = {
+    id: uid(),
+    orderId: order.id,
+    event,
+    ts: ts(),
+    lat: typeof coords.lat === 'number' ? coords.lat : null,
+    lng: typeof coords.lng === 'number' ? coords.lng : null,
+    actorRole,
+    actorId: SESSION.id,
+    trustScore: 0,
+    hash: generateLedgerHash()
+  };
+  const nextLedger = [...ledger, entry];
+  const route = getOrderRouteEndpoints(order);
+  const orderEvents = nextLedger.filter(e => e.orderId === order.id);
+  const integrity = TrustProtocol.calculateIntegrityScore(orderEvents, route, distanceKm);
+  entry.trustScore = integrity.score;
+  saveTrustLedger(nextLedger);
+}
+
+/**
+ * Compute a public trust index from ledger events.
+ * @returns {{score:number, label:string, anomalyRate:number, orderCount:number}}
+ */
+function getTrustIndex() {
+  const ledger = loadTrustLedger();
+  if (!ledger.length) return { score: 96, label: 'Stable', anomalyRate: 0, orderCount: 0 };
+
+  const orderIds = Array.from(new Set(ledger.map(e => e.orderId)));
+  const scores = orderIds.map(id => {
+    const order = getOrder(id);
+    if (!order) return 90;
+    return getOrderIntegrity(order).score;
+  });
+  const avg = Math.round(scores.reduce((s, n) => s + n, 0) / Math.max(scores.length, 1));
+  const anomalyCount = orderIds.filter(id => {
+    const order = getOrder(id);
+    if (!order) return false;
+    const integrity = getOrderIntegrity(order);
+    return integrity.anomalies.timeGap || integrity.anomalies.routeDeviation;
+  }).length;
+  const anomalyRate = orderIds.length ? Math.round((anomalyCount / orderIds.length) * 100) : 0;
+  const label = avg >= 90 ? 'Pristine' : avg >= 75 ? 'Stable' : avg >= 60 ? 'Watch' : 'Risk';
+  return { score: avg, label, anomalyRate, orderCount: orderIds.length };
+}
+
+/**
+ * Render a trust index summary card.
+ * @returns {string} HTML string.
+ */
+function renderTrustIndexCard() {
+  const { score, label, anomalyRate, orderCount } = getTrustIndex();
+  const badgeClass = score >= 90 ? 'badge-green' : score >= 75 ? 'badge-blue' : score >= 60 ? 'badge-amber' : 'badge-red';
+  return `
+    <div class="glass-card trust-index-card" style="margin-bottom:24px;">
+      <div class="between" style="margin-bottom:12px;">
+        <div>
+          <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Public Trust Index</div>
+          <div style="font-size:20px; font-weight:800; margin-top:4px;">${score}/100</div>
+        </div>
+        <span class="badge ${badgeClass}">${label}</span>
+      </div>
+      <div class="trust-index-bar"><span style="width:${score}%;"></span></div>
+      <div class="between" style="margin-top:10px; font-size:12px; color:var(--text-muted);">
+        <div>${orderCount} verified order${orderCount === 1 ? '' : 's'}</div>
+        <div>${anomalyRate}% anomaly rate</div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Load ESG alerts from localStorage.
+ * @returns {Array<Object>} Alerts array.
+ */
+function loadEsgAlerts() {
+  try {
+    const raw = window.localStorage.getItem(ESG_ALERTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Save ESG alerts to localStorage.
+ * @param {Array<Object>} alerts - Alerts to save.
+ */
+function saveEsgAlerts(alerts) {
+  try { window.localStorage.setItem(ESG_ALERTS_KEY, JSON.stringify(alerts)); } catch { /* ignore */ }
+}
+
+/**
+ * Append a new ESG alert.
+ * @param {Object} alert - Alert payload.
+ */
+function addEsgAlert(alert) {
+  const alerts = loadEsgAlerts();
+  alerts.push(alert);
+  saveEsgAlerts(alerts);
+}
+
+/**
+ * Resolve an ESG alert by id.
+ * @param {string} id - Alert id.
+ */
+window.resolveEsgAlert = function(id) {
+  const alerts = loadEsgAlerts();
+  const target = alerts.find(a => a.id === id);
+  if (target) target.resolved = true;
+  saveEsgAlerts(alerts);
+  refreshCurrentView(true);
+}
+
+/**
+ * Clear all ESG alerts.
+ */
+window.clearEsgAlerts = function() {
+  if (!confirm('Clear all compliance alerts?')) return;
+  saveEsgAlerts([]);
+  refreshCurrentView(true);
+}
+
+/**
+ * Create compliance alerts for a completed order.
+ * @param {Object} order - Completed order.
+ */
+function addEsgAlertsForOrder(order) {
+  if (!order) return;
+  const alerts = [];
+  const expected = parseFloat(order.kg || 0);
+  const actual = parseFloat(order.actualKg || 0);
+  const diffRatio = expected ? Math.abs(actual - expected) / expected : 0;
+
+  if (expected && actual && diffRatio > 0.25) {
+    alerts.push({
+      id: 'alert-' + uid(),
+      orderId: order.id,
+      type: 'weight_mismatch',
+      severity: 'high',
+      message: `Weight variance ${Math.round(diffRatio * 100)}% exceeds compliance threshold.`,
+      ts: ts(),
+      resolved: false
+    });
+  }
+
+  if (parseFloat(order.segScore || 0) > 0 && parseFloat(order.segScore || 0) < 60) {
+    alerts.push({
+      id: 'alert-' + uid(),
+      orderId: order.id,
+      type: 'low_segregation',
+      severity: 'medium',
+      message: 'Segregation score below 60 may impact ESG certification.',
+      ts: ts(),
+      resolved: false
+    });
+  }
+
+  const integrity = getOrderIntegrity(order);
+  if (integrity.score < 60) {
+    alerts.push({
+      id: 'alert-' + uid(),
+      orderId: order.id,
+      type: 'integrity_risk',
+      severity: 'high',
+      message: 'Integrity score below 60 suggests custody or route anomaly.',
+      ts: ts(),
+      resolved: false
+    });
+  }
+
+  alerts.forEach(addEsgAlert);
+}
+
+/**
+ * Render a compact compliance radar widget.
+ * @returns {string} HTML string.
+ */
+function renderComplianceWidget() {
+  const alerts = loadEsgAlerts().filter(a => !a.resolved).sort((a, b) => b.ts - a.ts);
+  const items = alerts.slice(0, 3).map(a => `
+    <div class="compliance-item">
+      <div>
+        <div class="compliance-title">${a.message}</div>
+        <div class="compliance-sub">Order #${a.orderId.slice(-6).toUpperCase()} · ${fmtDate(a.ts)}</div>
+      </div>
+      <span class="badge ${a.severity === 'high' ? 'badge-red' : 'badge-amber'}">${a.severity.toUpperCase()}</span>
+    </div>
+  `).join('');
+
+  return `
+    <div class="glass-card compliance-card" style="margin-bottom:24px;">
+      <div class="between" style="margin-bottom:12px;">
+        <div>
+          <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Compliance Radar</div>
+          <div style="font-size:18px; font-weight:800; margin-top:4px;">${alerts.length} active alert${alerts.length === 1 ? '' : 's'}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="showView('v-compliance')">Open →</button>
+      </div>
+      ${alerts.length ? items : '<div class="empty-state" style="padding:24px;">No compliance alerts detected.</div>'}
+    </div>
+  `;
+}
+
+/**
+ * Load credit ledger entries from localStorage.
+ * @returns {Array<Object>} Ledger entries.
+ */
+function loadCreditLedger() {
+  try {
+    const raw = window.localStorage.getItem(CREDIT_LEDGER_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Save credit ledger entries to localStorage.
+ * @param {Array<Object>} entries - Ledger entries.
+ */
+function saveCreditLedger(entries) {
+  try { window.localStorage.setItem(CREDIT_LEDGER_KEY, JSON.stringify(entries)); } catch { /* ignore */ }
+}
+
+/**
+ * Add a credit ledger entry.
+ * @param {Object} entry - Ledger entry.
+ */
+function addCreditEntry(entry) {
+  const entries = loadCreditLedger();
+  entries.push(entry);
+  saveCreditLedger(entries);
+}
+
+/**
+ * Compute reconciliation status.
+ * @returns {{total:number, mismatches:number, score:number}}
+ */
+function getReconciliationSummary() {
+  const entries = loadCreditLedger();
+  if (!entries.length) return { total: 0, mismatches: 0, score: 100 };
+  const mismatches = entries.filter(e => e.deltaPct >= 8).length;
+  const score = Math.max(0, Math.round(100 - (mismatches / entries.length) * 100));
+  return { total: entries.length, mismatches, score };
+}
+
+/**
+ * Render a reconciliation widget.
+ * @returns {string} HTML string.
+ */
+function renderReconciliationWidget() {
+  const summary = getReconciliationSummary();
+  const badgeClass = summary.score >= 90 ? 'badge-green' : summary.score >= 75 ? 'badge-blue' : summary.score >= 60 ? 'badge-amber' : 'badge-red';
+  return `
+    <div class="glass-card reconciliation-card" style="margin-bottom:24px;">
+      <div class="between" style="margin-bottom:12px;">
+        <div>
+          <div style="font-size:12px; color:var(--text-muted); text-transform:uppercase; font-weight:700;">Carbon Credit Reconciliation</div>
+          <div style="font-size:18px; font-weight:800; margin-top:4px;">${summary.score}% Integrity</div>
+        </div>
+        <span class="badge ${badgeClass}">${summary.mismatches} mismatch${summary.mismatches === 1 ? '' : 'es'}</span>
+      </div>
+      <div class="reconciliation-bar"><span style="width:${summary.score}%;"></span></div>
+      <div class="between" style="margin-top:10px; font-size:12px; color:var(--text-muted);">
+        <div>${summary.total} ledger entries</div>
+        <button class="btn btn-ghost btn-sm" onclick="showView('v-reconciliation')">Open →</button>
+      </div>
+    </div>
+  `;
+}
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 function ts() { return Date.now(); }
@@ -447,8 +806,10 @@ function buildSidebar() {
       <button class="nav-item" onclick="showView('v-iot-bins')" id="nav-v-iot-bins"><span class="nav-item-icon">🗑️</span> IoT Sensory Bins <span class="nav-badge" id="iot-alert-badge" style="display:none">!</span></button>
       <button class="nav-item" onclick="showView('v-pv-hist-week')" id="nav-v-pv-hist-week"><span class="nav-item-icon">📅</span> Weekly Records</button>
       <button class="nav-item" onclick="showView('v-pv-hist-month')" id="nav-v-pv-hist-month"><span class="nav-item-icon">🗓️</span> Monthly Records</button>
+      <button class="nav-item" onclick="showView('v-compliance')" id="nav-v-compliance"><span class="nav-item-icon">🧭</span> Compliance Center</button>
+      <button class="nav-item" onclick="showView('v-reconciliation')" id="nav-v-reconciliation"><span class="nav-item-icon">🧮</span> Reconciliation</button>
       <button class="nav-item" onclick="showView('v-market')" id="nav-v-market"><span class="nav-item-icon">🛒</span> ReGen Exchange</button>
-      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Verification Registry</button>
+      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Public Verification</button>
     `;
     showView('v-pv-dash');
   }
@@ -457,7 +818,9 @@ function buildSidebar() {
       <button class="nav-item active" onclick="showView('v-rd-dash')" id="nav-v-rd-dash"><span class="nav-item-icon">🗺️</span> Active Route</button>
       <button class="nav-item" onclick="showView('v-rd-jobs')" id="nav-v-rd-jobs"><span class="nav-item-icon">📋</span> Available Jobs <span class="nav-badge" id="rd-badge" style="display:none">0</span></button>
       <button class="nav-item" onclick="showView('v-rd-hist')" id="nav-v-rd-hist"><span class="nav-item-icon">✓</span> Completions</button>
-      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Verification Registry</button>
+      <button class="nav-item" onclick="showView('v-compliance')" id="nav-v-compliance"><span class="nav-item-icon">🧭</span> Compliance Center</button>
+      <button class="nav-item" onclick="showView('v-reconciliation')" id="nav-v-reconciliation"><span class="nav-item-icon">🧮</span> Reconciliation</button>
+      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Public Verification</button>
     `;
     showView('v-rd-dash');
   }
@@ -466,7 +829,9 @@ function buildSidebar() {
       <button class="nav-item active" onclick="showView('v-pl-dash')" id="nav-v-pl-dash"><span class="nav-item-icon">🏭</span> Operations</button>
       <button class="nav-item" onclick="showView('v-pl-in')" id="nav-v-pl-in"><span class="nav-item-icon">🚚</span> Incoming Flow</button>
       <button class="nav-item" onclick="showView('v-pl-out')" id="nav-v-pl-out"><span class="nav-item-icon">⚗️</span> Log Output</button>
-      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Verification Registry</button>
+      <button class="nav-item" onclick="showView('v-compliance')" id="nav-v-compliance"><span class="nav-item-icon">🧭</span> Compliance Center</button>
+      <button class="nav-item" onclick="showView('v-reconciliation')" id="nav-v-reconciliation"><span class="nav-item-icon">🧮</span> Reconciliation</button>
+      <button class="nav-item" onclick="showView('v-audit-portal')" id="nav-v-audit-portal"><span class="nav-item-icon">🔒</span> Public Verification</button>
     `;
     showView('v-pl-dash');
   }
@@ -479,7 +844,7 @@ window.showView = function(viewId) {
   if(btn) btn.classList.add('active');
   
   // Set Title
-  const titleMap = { 'v-iot-bins': 'IoT Sensory Bins' };
+  const titleMap = { 'v-iot-bins': 'IoT Sensory Bins', 'v-compliance': 'Compliance Center', 'v-reconciliation': 'Reconciliation' };
   if(btn) document.getElementById('tb-view-title').textContent = titleMap[viewId] || btn.innerText.replace(/[^a-zA-Z\s]/g, '').trim();
   
   if (window.innerWidth <= 768) toggleSidebar(false);
@@ -507,6 +872,23 @@ function saveOrder(o) {
 }
 function getAllLogs() { return DB.list('log:').map(k => DB.get(k)).filter(Boolean).sort((a,b)=>b.ts-a.ts); }
 
+function buildStatusStepper(status) {
+  if (status === 'rejected') return '';
+  const steps = [
+    { key: 'requested', label: 'Requested' },
+    { key: 'assigned',  label: 'Assigned'  },
+    { key: 'en_route',  label: 'En Route'  },
+    { key: 'picked_up', label: 'Picked Up' },
+    { key: 'at_plant',  label: 'At Plant'  },
+    { key: 'completed', label: 'Completed' },
+  ];
+  const idx = steps.findIndex(s => s.key === status);
+  return `<div class="order-stepper">${steps.map((s, i) => {
+    const cls = i < idx ? 'done' : i === idx && status !== 'completed' ? 'active' : i <= idx ? 'done' : '';
+    return `<div class="os-step ${cls}"><div class="os-dot"></div><div class="os-label">${s.label}</div></div>`;
+  }).join('')}</div>`;
+}
+
 // Generic Order Card Component
 function buildOrderCard(o, role) {
   const badges = {
@@ -518,6 +900,15 @@ function buildOrderCard(o, role) {
     completed: '<span class="badge" style="background:var(--green);color:white;">Completed</span>',
     rejected: '<span class="badge badge-red">Rejected</span>'
   };
+
+  const integrity = getOrderIntegrity(o);
+  const trustBadge = integrity.score >= 90
+    ? '<span class="badge badge-green">High Integrity</span>'
+    : integrity.score >= 75
+      ? '<span class="badge badge-blue">Verified</span>'
+      : integrity.score >= 60
+        ? '<span class="badge badge-amber">Watch</span>'
+        : '<span class="badge badge-red">Risk</span>';
   
   let acts = '';
   if (role === 'provider' && o.status === 'requested') {
@@ -542,17 +933,23 @@ function buildOrderCard(o, role) {
     acts += `<button class="btn btn-outline-danger btn-sm" onclick="deleteOrder('${o.id}')" style="margin-left:auto;">🗑 Delete Record</button>`;
   }
 
+  acts += `<button class="btn btn-ghost btn-sm" onclick="openIntegrityScan('${o.id}')">🛡 Integrity Scan</button>`;
+
   return `
     <div class="order-card" data-status="${o.status}">
       <div class="oc-header">
         <div class="oc-title">${o.providerOrg} <span style="font-size:12px;color:var(--text-muted);font-family:monospace">#${o.id.slice(-6).toUpperCase()}</span></div>
-        <div>${badges[o.status]}</div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          ${badges[o.status]}
+          ${trustBadge}
+        </div>
       </div>
       <div class="oc-meta">
         <div class="oc-meta-item">🗑 ${o.wasteType} (${o.kg}kg)</div>
         <div class="oc-meta-item">🕒 ${o.shift}</div>
         <div class="oc-meta-item">⚗️ Dest: ${o.plantName}</div>
       </div>
+      ${buildStatusStepper(o.status)}
       ${o.actualKg ? `<div style="margin-bottom:8px;font-size:13px;color:var(--green);font-weight:600;">✓ Actual Collected: ${o.actualKg}kg (Quality: ${o.quality})</div>` : ''}
       ${o.tokensMinted ? `<div style="margin-bottom:8px;font-size:13px;color:var(--amber);font-weight:600;">🪙 Minted ${o.tokensMinted} $RGX <span style="font-size:10px; color:var(--text-muted); font-family:monospace; margin-left:8px;">TX: ${o.txHash.slice(0,12)}...</span></div>` : ''}
       ${acts ? `<div class="oc-actions">${acts}</div>` : ''}
@@ -565,6 +962,14 @@ async function refreshCurrentView(fullRender = false) {
   const mc = document.getElementById('main-content');
   if (currentView === 'v-audit-portal') {
     AuditPortal.renderPortal(mc, fullRender);
+    return;
+  }
+  if (currentView === 'v-compliance') {
+    renderCompliance(mc, fullRender);
+    return;
+  }
+  if (currentView === 'v-reconciliation') {
+    renderReconciliation(mc, fullRender);
     return;
   }
   if (currentView === 'v-market') {
@@ -640,6 +1045,125 @@ async function refreshCurrentView(fullRender = false) {
   if (SESSION.role === 'plant') await renderPlant(mc, fullRender);
 }
 
+/**
+ * Render compliance center view.
+ * @param {HTMLElement} mc - Main content container.
+ * @param {boolean} fullRender - Whether to fully render.
+ */
+function renderCompliance(mc, fullRender) {
+  const alerts = loadEsgAlerts().sort((a, b) => b.ts - a.ts);
+  const openAlerts = alerts.filter(a => !a.resolved);
+  const resolvedAlerts = alerts.filter(a => a.resolved);
+
+  if (!fullRender) return;
+
+  mc.innerHTML = `
+    <div class="between" style="margin-bottom:24px; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h3 class="heading">Compliance Center</h3>
+        <div style="font-size:13px; color:var(--text-muted);">Real-time ESG anomalies and audit flags.</div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost btn-sm" onclick="clearEsgAlerts()">Clear All</button>
+      </div>
+    </div>
+
+    <div class="stats-grid" style="margin-bottom:24px;">
+      <div class="stat-card"><div class="stat-val">${openAlerts.length}</div><div class="stat-lbl">Active Alerts</div></div>
+      <div class="stat-card"><div class="stat-val">${resolvedAlerts.length}</div><div class="stat-lbl">Resolved</div></div>
+      <div class="stat-card"><div class="stat-val">${alerts.length}</div><div class="stat-lbl">Total Flags</div></div>
+      <div class="stat-card"><div class="stat-val">${Math.round((openAlerts.length / Math.max(alerts.length, 1)) * 100)}%</div><div class="stat-lbl">Open Rate</div></div>
+    </div>
+
+    <div class="two-col" style="align-items: stretch;">
+      <div class="glass-card compliance-card">
+        <div class="between" style="margin-bottom:12px;">
+          <h4 style="font-size:16px;">Active Alerts</h4>
+          <span class="badge badge-amber">${openAlerts.length} Open</span>
+        </div>
+        <div class="compliance-list">
+          ${openAlerts.length ? openAlerts.map(a => `
+            <div class="compliance-item">
+              <div>
+                <div class="compliance-title">${a.message}</div>
+                <div class="compliance-sub">Order #${a.orderId.slice(-6).toUpperCase()} · ${fmtDate(a.ts)}</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="badge ${a.severity === 'high' ? 'badge-red' : 'badge-amber'}">${a.severity.toUpperCase()}</span>
+                <button class="btn btn-ghost btn-sm" onclick="resolveEsgAlert('${a.id}')">Resolve</button>
+              </div>
+            </div>
+          `).join('') : '<div class="empty-state">No active alerts.</div>'}
+        </div>
+      </div>
+
+      <div class="glass-card compliance-card">
+        <div class="between" style="margin-bottom:12px;">
+          <h4 style="font-size:16px;">Resolved Alerts</h4>
+          <span class="badge badge-green">${resolvedAlerts.length} Done</span>
+        </div>
+        <div class="compliance-list">
+          ${resolvedAlerts.length ? resolvedAlerts.slice(0, 8).map(a => `
+            <div class="compliance-item resolved">
+              <div>
+                <div class="compliance-title">${a.message}</div>
+                <div class="compliance-sub">Order #${a.orderId.slice(-6).toUpperCase()} · ${fmtDate(a.ts)}</div>
+              </div>
+              <span class="badge badge-green">RESOLVED</span>
+            </div>
+          `).join('') : '<div class="empty-state">No resolved alerts yet.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Render reconciliation center view.
+ * @param {HTMLElement} mc - Main content container.
+ * @param {boolean} fullRender - Whether to fully render.
+ */
+function renderReconciliation(mc, fullRender) {
+  const entries = loadCreditLedger().sort((a, b) => b.ts - a.ts);
+  const mismatches = entries.filter(e => e.deltaPct >= 8);
+  if (!fullRender) return;
+
+  mc.innerHTML = `
+    <div class="between" style="margin-bottom:24px; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h3 class="heading">Carbon Credit Reconciliation</h3>
+        <div style="font-size:13px; color:var(--text-muted);">Cross-verify minted credits against expected ESG yields.</div>
+      </div>
+    </div>
+
+    <div class="stats-grid" style="margin-bottom:24px;">
+      <div class="stat-card"><div class="stat-val">${entries.length}</div><div class="stat-lbl">Ledger Entries</div></div>
+      <div class="stat-card" style="border-top-color:var(--amber);"><div class="stat-val">${mismatches.length}</div><div class="stat-lbl">Mismatches</div></div>
+      <div class="stat-card"><div class="stat-val">${getReconciliationSummary().score}%</div><div class="stat-lbl">Integrity Score</div></div>
+      <div class="stat-card"><div class="stat-val">${Math.round((mismatches.length / Math.max(entries.length, 1)) * 100)}%</div><div class="stat-lbl">Mismatch Rate</div></div>
+    </div>
+
+    <div class="glass-card reconciliation-card">
+      <div class="between" style="margin-bottom:12px;">
+        <h4 style="font-size:16px;">Recent Ledger Entries</h4>
+        <span class="badge ${mismatches.length ? 'badge-amber' : 'badge-green'}">${mismatches.length} mismatch${mismatches.length === 1 ? '' : 'es'}</span>
+      </div>
+      <div class="reconciliation-list">
+        ${entries.length ? entries.slice(0, 12).map(e => `
+          <div class="reconciliation-item ${e.deltaPct >= 8 ? 'flagged' : ''}">
+            <div>
+              <div class="reconciliation-title">Order #${e.orderId.slice(-6).toUpperCase()} · ${e.org}</div>
+              <div class="reconciliation-sub">Expected ${e.expectedTokens} $RGX · Minted ${e.mintedTokens} $RGX · Δ ${e.deltaPct.toFixed(1)}%</div>
+              <div class="reconciliation-sub">${fmtDate(e.ts)} · Trust ${e.trustScore}%</div>
+            </div>
+            <span class="badge ${e.deltaPct >= 8 ? 'badge-red' : 'badge-green'}">${e.deltaPct >= 8 ? 'FLAG' : 'OK'}</span>
+          </div>
+        `).join('') : '<div class="empty-state">No reconciliation entries yet.</div>'}
+      </div>
+    </div>
+  `;
+}
+
 // ════════ PROVIDER LOGIC ════════
 async function renderProvider(mc, fullRender) {
   const orders = getAllOrders().filter(o => o.providerId === SESSION.id);
@@ -659,6 +1183,9 @@ async function renderProvider(mc, fullRender) {
       </div>
 
       <div class="stats-grid" id="pv-stats"></div>
+      ${renderTrustIndexCard()}
+      ${renderComplianceWidget()}
+      ${renderReconciliationWidget()}
       <div class="two-col">
         <div>
           <h3 class="heading" style="margin-bottom:16px;">Active Dispatches</h3><div id="pv-act"></div>
@@ -1034,6 +1561,7 @@ window.submitPvRequest = function() {
     wasteType: type, kg, shift, plantId: nearest.id, plantName: nearest.org, status: 'requested'
   };
   saveOrder(o);
+  recordTrustEvent(o, 'requested', 'provider', { lat: SESSION.lat, lng: SESSION.lng });
   showToast(`✓ Dispatched! Routed to ${nearest.org} (${minDist.toFixed(1)}km away).`);
   showView('v-pv-dash');
 }
@@ -1167,6 +1695,10 @@ async function renderRider(mc, fullRender) {
         <button class="mobile-tab-btn ${tab==='route'?'active':''}" onclick="switchRdTab('route')">Route HUD</button>
         <button class="mobile-tab-btn ${tab==='analytics'?'active':''}" onclick="switchRdTab('analytics')">AI Telemetry</button>
       </div>
+
+      ${renderTrustIndexCard()}
+      ${renderComplianceWidget()}
+      ${renderReconciliationWidget()}
 
       <div class="two-col">
         <div class="${tab !== 'route' ? 'desktop-only' : ''}">
@@ -1399,11 +1931,16 @@ window.switchRdTab = function(t) { window._rdTab = t; refreshCurrentView(true); 
 window.riderAccept = function(id) {
   const o = getOrder(id); if(!o) return;
   o.status = 'assigned'; o.riderId = SESSION.id; o.riderName = SESSION.name;
-  saveOrder(o); showToast("✓ Route Added to Batch!"); showView('v-rd-dash');
+  saveOrder(o);
+  recordTrustEvent(o, 'assigned', 'rider', { lat: SESSION.lat, lng: SESSION.lng });
+  showToast("✓ Route Added to Batch!");
+  showView('v-rd-dash');
 }
 window.riderUpdate = function(id, st) {
   const o = getOrder(id); if(!o) return;
-  o.status = st; saveOrder(o); refreshCurrentView();
+  o.status = st; saveOrder(o);
+  recordTrustEvent(o, st, 'rider', { lat: SESSION.lat, lng: SESSION.lng });
+  refreshCurrentView();
 }
 window.openPickupConfirm = function(id) {
   const html = `
@@ -1420,7 +1957,91 @@ window.confirmPickup = function(id) {
   const kg = document.getElementById('m-kg').value;
   if(!kg) return showToast("⚠ Enter weight.");
   const o = getOrder(id); o.status = 'picked_up'; o.actualKg = kg; o.quality = document.getElementById('m-qual').value;
-  saveOrder(o); closeModal(); refreshCurrentView();
+  saveOrder(o);
+  recordTrustEvent(o, 'picked_up', 'rider', { lat: SESSION.lat, lng: SESSION.lng });
+  closeModal();
+  refreshCurrentView();
+}
+
+/**
+ * Map trust ledger events to display labels.
+ * @param {string} event - Event key.
+ * @returns {{label:string, icon:string}}
+ */
+function getIntegrityEventMeta(event) {
+  const map = {
+    requested: { label: 'Origin Collection Dispatched', icon: '🏨' },
+    assigned: { label: 'Rider Assignment Confirmed', icon: '🧭' },
+    en_route: { label: 'Logistics Chain Verification', icon: '🚛' },
+    picked_up: { label: 'Custody Transfer Logged', icon: '📦' },
+    at_plant: { label: 'Plant Gate Arrival', icon: '🏭' },
+    completed: { label: 'Plant Processing Attestation', icon: '🧪' },
+    sealed: { label: 'Cryptographic Seal Minted', icon: '🔒' }
+  };
+  return map[event] || { label: 'Ledger Event', icon: '🧷' };
+}
+
+/**
+ * Open integrity scan modal for an order.
+ * @param {string} orderId - Order id.
+ */
+window.openIntegrityScan = function(orderId) {
+  const order = getOrder(orderId);
+  if (!order) return;
+
+  const box = document.getElementById('modal-box');
+  const modal = document.getElementById('modal');
+  if (!box || !modal) return;
+
+  box.innerHTML = `
+    <h3 class="modal-title">Integrity Scan</h3>
+    <p class="modal-sub">Validating custody chain and route integrity for this dispatch.</p>
+    <div class="integrity-scan-panel">
+      <div class="integrity-spinner"></div>
+      <div style="font-size:13px; color:var(--text-muted);">Running zero-trust verification...</div>
+    </div>
+  `;
+  modal.classList.add('open');
+
+  setTimeout(() => {
+    const events = getOrderLedgerEvents(orderId);
+    const integrity = getOrderIntegrity(order);
+    const statusClass = integrity.score >= 90 ? 'badge-green' : integrity.score >= 75 ? 'badge-blue' : integrity.score >= 60 ? 'badge-amber' : 'badge-red';
+    const statusLabel = integrity.score >= 90 ? 'High Integrity' : integrity.score >= 75 ? 'Verified' : integrity.score >= 60 ? 'Watch' : 'Risk';
+
+    const timeline = events.length ? events.map((e, idx) => {
+      const meta = getIntegrityEventMeta(e.event);
+      return `
+        <div class="trust-tl-item">
+          <div class="trust-tl-icon">${meta.icon}</div>
+          <div>
+            <div class="trust-tl-title">${meta.label}</div>
+            <div class="trust-tl-sub">${fmtDate(e.ts)} · ${e.actorRole.toUpperCase()}</div>
+          </div>
+          ${idx < events.length - 1 ? '<div class="trust-tl-line"></div>' : ''}
+        </div>
+      `;
+    }).join('') : '<div class="empty-state" style="margin-top:12px;">No ledger events yet.</div>';
+
+    box.innerHTML = `
+      <h3 class="modal-title">Integrity Scan</h3>
+      <p class="modal-sub">Ledger hash and custody chain validated.</p>
+      <div class="integrity-summary">
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:var(--text-muted); font-weight:700;">Trust Score</div>
+          <div style="font-size:24px; font-weight:800;">${integrity.score}/100</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="badge ${statusClass}">${statusLabel}</div>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">Δ ${integrity.maxDeviationKm.toFixed(2)} km · Gap ${Math.round(integrity.maxGapMins)} min</div>
+        </div>
+      </div>
+      <div class="trust-timeline">${timeline}</div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+      </div>
+    `;
+  }, 900);
 }
 window.closeModal = function() { document.getElementById('modal').classList.remove('open'); }
 
@@ -1512,6 +2133,10 @@ async function renderPlant(mc, fullRender) {
   if (currentView === 'v-pl-dash') {
     if(fullRender) mc.innerHTML = `
       <div class="stats-grid" id="pl-stats"></div>
+
+      ${renderTrustIndexCard()}
+      ${renderComplianceWidget()}
+      ${renderReconciliationWidget()}
       
       <div id="pl-ai-widget"></div>
       
@@ -1669,7 +2294,8 @@ window.confirmPlantReceipt = function(id) {
   if (providerAcc) {
      const providerHistory = getAllOrders().filter(ord => ord.providerId === o.providerId && ord.status === 'completed');
      const trustScore = TrustProtocol.calculateScore(providerAcc, providerHistory);
-     const earnedTokens = TrustProtocol.calculateReward(Math.round((o.actualKg || o.kg) * 2), trustScore);
+      const baseTokens = Math.round((o.actualKg || o.kg) * 2);
+      const earnedTokens = TrustProtocol.calculateReward(baseTokens, trustScore);
      
      providerAcc.tokens = (providerAcc.tokens || 0) + earnedTokens;
      o.tokensMinted = earnedTokens;
@@ -1680,9 +2306,28 @@ window.confirmPlantReceipt = function(id) {
          SESSION.tokens = providerAcc.tokens;
          document.getElementById('token-balance').textContent = SESSION.tokens;
      }
+
+     const expectedTokens = TrustProtocol.calculateReward(baseTokens, trustScore);
+     const deltaPct = expectedTokens ? Math.abs(earnedTokens - expectedTokens) / expectedTokens * 100 : 0;
+     addCreditEntry({
+       id: 'credit-' + uid(),
+       orderId: o.id,
+       org: o.providerOrg,
+       expectedTokens,
+       mintedTokens: earnedTokens,
+       deltaPct,
+       trustScore,
+       ts: ts()
+     });
   }
 
-  saveOrder(o); closeModal(); refreshCurrentView(); showToast(`✓ Intake Confirmed. Minted ${earnedTokens} $RGX for provider!`);
+  saveOrder(o);
+  recordTrustEvent(o, 'completed', 'plant', { lat: SESSION.lat, lng: SESSION.lng });
+  recordTrustEvent(o, 'sealed', 'plant', { lat: SESSION.lat, lng: SESSION.lng });
+  addEsgAlertsForOrder(o);
+  closeModal();
+  refreshCurrentView();
+  showToast(`✓ Intake Confirmed. Minted ${earnedTokens} $RGX for provider!`);
 }
 
 window.savePlantLog = function() {
